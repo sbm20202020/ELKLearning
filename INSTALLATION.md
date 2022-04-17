@@ -79,4 +79,4 @@ server {
 }
 ```
 
-[<img src="https://assets.digitalocean.com/articles/elastic_1804/KibanaDashboard.png">](https://assets.digitalocean.com/articles/elastic_1804/KibanaDashboard.png)
+[<img src="./screenshots/Kibana.png">](Kibana)
