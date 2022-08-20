@@ -1,0 +1,79 @@
+version: '3.3'
+
+services:
+  es-master:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.3.3
+    ports:
+      - '19200:9200'
+      - '19300:9300'
+    environment:
+      - cluster.name=hadiya-cluster
+      - node.name=hadiya-es-master
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      # - path.data=/var/lib/elasticsearch
+      # - path.logs=/var/log/elasticsearch
+      - discovery.seed_hosts=es-master
+      - cluster.initial_master_nodes=es-master
+      - node.roles=master,ingest
+    ulimits:
+      nproc: 65535
+    volumes:
+      - hadiya_es_master_data=/usr/share/elasticsearch/data
+      - hadiya_es_master_logs=/usr/share/elasticsearch/logs
+      - hadiya_es_master_configs=/etc/elasticsearch
+    networks:
+      - hadiya_network
+
+  es-data-1:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.3.3
+    ports:
+      - '29200:9200'
+      - '29300:9300'
+    environment:
+      - cluster.name=hadiya-cluster
+      - node.name=hadiya-es-data-1
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      # - path.data=/var/lib/elasticsearch
+      # - path.logs=/var/log/elasticsearch
+      - discovery.seed_hosts=es-master
+      - cluster.initial_master_nodes=es-master
+      - node.roles=data
+    ulimits:
+      nproc: 65535
+    volumes:
+      - hadiya_es_data_1_data=/usr/share/elasticsearch/data
+      - hadiya_es_data_1_logs=/usr/share/elasticsearch/logs
+      - hadiya_es_data_1_configs=/etc/elasticsearch
+    networks:
+      - hadiya_network
+  
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.3.3
+    ports:
+      - '5601:5601'
+    environment:
+      - "ELASTICSEARCH_HOSTS=http://es-master:9200"
+    volumes:
+      - hadiya_kibana_configs=/etc/kibana
+    networks:
+      - hadiya_network
+
+volumes:
+  hadiya_es_master_data:
+    driver: local
+  hadiya_es_master_logs:
+    driver: local
+  hadiya_es_master_configs:
+    driver: local
+  hadiya_es_data_1_data:
+    driver: local
+  hadiya_es_data_1_logs:
+    driver: local
+  hadiya_es_data_1_configs:
+    driver: local
+  hadiya_kibana_configs:
+    driver: local
+
+networks:
+  hadiya_network:
+    driver: bridge
