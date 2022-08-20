@@ -1,79 +1,204 @@
 version: '3.3'
 
 services:
+
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    user: '0'
+    volumes:
+      - 'hadiya_elk_certs:/usr/share/elasticsearch/config/certs'
+    command: >
+      bash -c '
+        echo "Currently we are in $$(pwd)";
+        echo "$$(ls -la)";
+        echo "$$(ls -la config)";
+        echo ${ES_PASSWORD};
+        echo [ x${ES_PASSWORD} == x ]
+        if [ x${ES_PASSWORD} == x ]; then
+          echo "Set the ES_PASSWORD in .env file";
+          exit 1;
+        elif [ x${KIBANA_PASSWORD} == x ]; then
+          echo "Set the KIBANA_PASSWORD in .env file";
+          exit 1;
+        fi;
+        if [ ! -d config/certs ]; then
+          echo "Creating the certs directory ...";
+          mkdir -p config/certs;
+        fi;
+        if [ ! -f config/certs/ca.zip ]; then
+          echo "Create CA cert...";
+          bin/elasticsearch-certutil ca --silent --pem -out config/certs/ca.zip;
+          unzip config/certs/ca.zip -d config/certs;
+        fi;
+        if [ ! -f config/certs/certs.zip ]; then
+          echo "Creating certs ...";
+          echo -ne \
+          "instances:\n"\
+          "  - name: es-master\n"\
+          "    dns:\n"\
+          "      - es-master\n"\
+          "      - localhost\n"\
+          "    ip:\n"\
+          "      - 127.0.0.1\n"\
+          "  - name: es-data-1\n"\
+          "    dns:\n"\
+          "      - es-data-1\n"\
+          "      - localhost\n"\
+          "    ip:\n"\
+          "      - 127.0.0.1\n"\
+          > config/certs/instances.yml;
+          bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key;
+          unzip config/certs/certs.zip -d config/certs;
+        fi;
+        echo "Currently we are in $$(pwd)";
+        echo "Setting file permissions ...";
+        chown -R root:root config/certs;
+        find . -type d -exec chmod 750 \{\} \;;
+        find . -type f -exec chmod 640 \{\} \;;
+        echo "Waiting for Elasticsearch availability";
+        until curl -s --cacert config/certs/ca/ca.crt https://es-master:9200 | grep -q "missing authentication credentials"; do sleep 30; done;
+        echo "Setting kibana_system password";
+        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:${ES_PASSWORD}" -H "Content-Type: application/json" https://es-master:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
+        echo "All done!";
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f config/certs/es-master/es-master.crt ]"]
+      interval: 1s
+      timeout: 5s
+      retries: 120
+
   es-master:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.3.3
+    depends_on:
+      - setup
+          # condition: service_healthy
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
     ports:
-      - '19200:9200'
-      - '19300:9300'
+      - '${ES_PORT}:9200'
     environment:
-      - cluster.name=hadiya-cluster
-      - node.name=hadiya-es-master
+      - cluster.name=${ES_CLUSTER}
+      - node.name=es-master
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      # - path.data=/var/lib/elasticsearch
-      # - path.logs=/var/log/elasticsearch
       - discovery.seed_hosts=es-master
       - cluster.initial_master_nodes=es-master
       - node.roles=master,ingest
+      - ELASTIC_PASSWORD=${ES_PASSWORD}
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es-master/es-master.key
+      - xpack.security.http.ssl.certificate=certs/es-master/es-master.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.http.ssl.verification_mode=certificate
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es-master/es-master.key
+      - xpack.security.transport.ssl.certificate=certs/es-master/es-master.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${LICENSE}
+    # mem_limit: ${MEM_LIMIT}
     ulimits:
       nproc: 65535
+      memlock:
+        soft: -1
+        hard: -1
     volumes:
-      - hadiya_es_master_data=/usr/share/elasticsearch/data
-      - hadiya_es_master_logs=/usr/share/elasticsearch/logs
-      - hadiya_es_master_configs=/etc/elasticsearch
-    networks:
-      - hadiya_network
+      - 'hadiya_es_master_data:/usr/share/elasticsearch'
+      - 'hadiya_es_master_configs:/etc/elasticsearch'
+      - 'hadiya_elk_certs:/usr/share/elasticsearch/config/certs'
+    healthcheck:
+      test: [
+          "CMD-SHELL",
+          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
 
   es-data-1:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.3.3
-    ports:
-      - '29200:9200'
-      - '29300:9300'
+    depends_on:
+      - es-master
+          # condition: service_healthy
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
     environment:
-      - cluster.name=hadiya-cluster
-      - node.name=hadiya-es-data-1
+      - cluster.name=${ES_CLUSTER}
+      - node.name=es-data-1
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      # - path.data=/var/lib/elasticsearch
-      # - path.logs=/var/log/elasticsearch
       - discovery.seed_hosts=es-master
       - cluster.initial_master_nodes=es-master
       - node.roles=data
+      - ELASTIC_PASSWORD=${ES_PASSWORD}
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es-data-1/es-data-1.key
+      - xpack.security.http.ssl.certificate=certs/es-data-1/es-data-1.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.http.ssl.verification_mode=certificate
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es-data-1/es-data-1.key
+      - xpack.security.transport.ssl.certificate=certs/es-data-1/es-data-1.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${LICENSE}
+    # mem_limit: ${MEM_LIMIT}
     ulimits:
       nproc: 65535
+      memlock:
+        soft: -1
+        hard: -1
     volumes:
-      - hadiya_es_data_1_data=/usr/share/elasticsearch/data
-      - hadiya_es_data_1_logs=/usr/share/elasticsearch/logs
-      - hadiya_es_data_1_configs=/etc/elasticsearch
-    networks:
-      - hadiya_network
-  
+      - 'hadiya_es_data_1_data:/usr/share/elasticsearch'
+      - 'hadiya_es_data_1_configs:/etc/elasticsearch'
+      - 'hadiya_elk_certs:/usr/share/elasticsearch/config/certs'
+    healthcheck:
+      test: [
+          "CMD-SHELL",
+          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
   kibana:
-    image: docker.elastic.co/kibana/kibana:8.3.3
+    depends_on:
+      - es-master
+      - es-data-1
+    image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
     ports:
       - '5601:5601'
     environment:
-      - "ELASTICSEARCH_HOSTS=http://es-master:9200"
+      - SERVERNAME=kibana
+      - ELASTICSEARCH_HOSTS=https://es-master:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
     volumes:
-      - hadiya_kibana_configs=/etc/kibana
-    networks:
-      - hadiya_network
+      - 'hadiya_kibana_configs:/etc/kibana'
+      - 'hadiya_kibana_data:/usr/share/kibana/data'
+      - 'hadiya_elk_certs:/usr/share/kibana/config/certs'
+    # mem_limit: ${MEM_LIMIT}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1 302 Found'"
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 120
 
 volumes:
   hadiya_es_master_data:
-    driver: local
-  hadiya_es_master_logs:
     driver: local
   hadiya_es_master_configs:
     driver: local
   hadiya_es_data_1_data:
     driver: local
-  hadiya_es_data_1_logs:
-    driver: local
   hadiya_es_data_1_configs:
     driver: local
   hadiya_kibana_configs:
     driver: local
-
-networks:
-  hadiya_network:
-    driver: bridge
+  hadiya_kibana_data:
+    driver: local
+  hadiya_elk_certs:
+    driver: local
